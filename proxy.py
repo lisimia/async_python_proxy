@@ -8,6 +8,7 @@ from subprocess import call
 CHUNK_SIZE = 16
 
 
+# HTTP forwarding
 async def handler(request):
     print('req', request)
     print('url', request.url)
@@ -49,10 +50,37 @@ async def handler(request):
         my_resp.write_eof()
         return my_resp
 
+# HTTPS
+async def h2(client_reader, client_writer):
+    print('hi!')
+    line = await client_reader.readline()
+    if b'CONNECT' in line:
+        await https(line, client_reader, client_writer)
+    else:
+        print("BAD USAGE, this is for CONNECT only")
 
-async def handler_https(request):
-    return web.Response(text='hi from https')
 
+async def https(line, client_reader, client_writer):
+    print(line)
+    while line.strip():
+        line = await client_reader.readline()
+        print(line)
+    client_writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
+    await client_writer.drain()
+
+    s_r, s_w = await asyncio.open_connection(host='127.0.0.1', port=3129)
+    print ("connection made")
+
+    loop = asyncio.get_event_loop()
+    t1 = loop.create_task(weld(client_reader, s_w))
+    t2 = loop.create_task(weld(s_r, client_writer))
+
+# HACK because asyncio doesn't support this yet
+async def weld(i, o):
+    while True:
+        d = await i.read(1)
+        o.write(d)
+# END HTTPS
 
 async def web_ui(request):
     return web.Response(text='hi im the webui')
@@ -79,15 +107,24 @@ if __name__ == '__main__':
     # TODO auto add root CA to OS
 
     loop = asyncio.get_event_loop()
-
+    
+    # for http
     f = loop.create_server(web.Server(handler), "0.0.0.0", 3128)
-    f2 = loop.create_server(web.Server(handler), "0.0.0.0", 3129, ssl=sc)
+
+    # for https 
+    f4 = asyncio.start_server(h2, "0.0.0.0", 3126, loop=loop)
+
+    # used as a hack
+    f2 = loop.create_server(web.Server(handler), "127.0.0.1", 3129, ssl=sc)
+
+    # used for UI
     f3 = loop.create_server(web.Server(web_ui), "0.0.0.0", 4100)
 
     try:
         loop.run_until_complete(f)
         loop.run_until_complete(f2)
         loop.run_until_complete(f3)
+        loop.run_until_complete(f4)
         loop.run_forever()
     except KeyboardInterrupt:
         pass
